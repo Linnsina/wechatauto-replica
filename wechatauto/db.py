@@ -1624,20 +1624,40 @@ class WeChatDB:
                         conn.close()
         return None
 
-    def _shard_rows(self, tables, sql_ext, params=()):
+    # 跨分片统一排序键：分片间 local_id 会重复（每片从 1 起），
+    # 必须在分片内固定 tie-break，否则同一 sort_seq 的先后会随扫描顺序漂移。
+    # 方向选 local_id ASC：实测真实库中 main 的裸扫描在重复 sort_seq 组内
+    # 一律是 local_id 升序（≈rowid 顺序），因此该方向能与旧输出逐条一致
+    # （local_id DESC 会反转这些重复组内的先后）。
+    _MSG_ORDER_DESC = "ORDER BY sort_seq DESC, local_id ASC"
+    _MSG_ORDER_ASC = "ORDER BY sort_seq ASC, local_id ASC"
+
+    def _shard_rows(self, tables, sql_ext, params=(), order_ext="", per_shard_limit=None):
         """跨分片执行统一 SELECT，返回合并后的 sqlite3.Row 列表（调用方后续排序）。
 
         tables: _run_msg_query 传入的 [(conn, table), ...]。
-        分片间 local_id 会重复排序（每片从 1 起），因此调用方必须显式按
-        sort_seq 排序，不能用跨分片 LIMIT/OFFSET 直查。
+        分片间 local_id 会重复（每片从 1 起），因此跨分片排序键必须带上
+        local_id，不能用跨分片 LIMIT/OFFSET 直查。
+
+        order_ext: 分片内 ORDER BY 子句（如 _MSG_ORDER_DESC）。
+        per_shard_limit: 分片内 LIMIT，必须与 order_ext 使用同一排序键。
+            全局前 K 行必然各自落在所属分片按同一排序键的前 K 行内（连同
+            分片顺序，合并后构成 (sort_seq, 分片序, local_id) 全序），
+            因此"先各片取前 K 再合并排序分页"与"全量取回再排序分页"逐条
+            等价，但超大群不必再把每个分片的全部行取回 Python 排序。
+            为 None 时保持原全量行为。
         """
+        limit_sql = ""
+        if per_shard_limit is not None:
+            limit_sql = " LIMIT %d" % max(0, int(per_shard_limit))
         rows = []
         for conn, table in tables:
             try:
                 rows += conn.execute(
                     "SELECT local_id, local_type, real_sender_id, create_time, "
                     "message_content, source, packed_info_data, compress_content, "
-                    "server_id, sort_seq FROM %s %s" % (table, sql_ext),
+                    "server_id, sort_seq FROM %s %s %s%s" % (
+                        table, sql_ext, order_ext, limit_sql),
                     params,
                 ).fetchall()
             except sqlite3.DatabaseError:
@@ -1645,10 +1665,21 @@ class WeChatDB:
         return rows
 
     def get_messages(self, user: str, limit: int = 20, offset: int = 0) -> List[dict]:
-        """读取指定会话（微信号/群号）的最近消息（跨分片合并后按 sort_seq 排序）"""
+        """读取指定会话（微信号/群号）的最近消息（跨分片合并后按 sort_seq 降序）
+
+        优化：分片内先 ORDER BY+LIMIT(limit+offset) 再合并排序取窗口。
+        全局第 offset..offset+limit 行必然落在各分片同一排序键的前
+        limit+offset 行内，因此结果与"全量取回再排序分页"逐条一致，
+        但超大群（数万条）不再把每个分片的全部行取回 Python。
+        合并排序保持与旧实现相同的稳定语义：重复 sort_seq 时先分片顺序、
+        再分片内 local_id 升序（已在分片内 ORDER BY 固定）。
+        """
+        cap = max(0, int(limit)) + max(0, int(offset))
         rows = self._run_msg_query(
             user,
-            lambda tables: self._shard_rows(tables, ""),
+            lambda tables: self._shard_rows(
+                tables, "", order_ext=self._MSG_ORDER_DESC, per_shard_limit=cap,
+            ),
         )
         if not rows:
             return []
@@ -1755,18 +1786,25 @@ class WeChatDB:
         return [r["local_id"] for r in rows]
 
     def get_new_messages(self, user: str, since_seq: int = 0, limit: int = 200) -> List[dict]:
-        """返回 sort_seq > since_seq 的新消息（升序），供轮询监听使用"""
+        """返回 sort_seq > since_seq 的新消息（升序），供轮询监听使用
+
+        优化：分片内先 ORDER BY+LIMIT 再合并取前 limit 条。排序键同
+        get_messages：分片内 local_id 升序固定 tie-break，跨分片保持
+        稳定合并（先分片顺序），与旧实现逐条一致。
+        """
+        want = max(0, int(limit))
         rows = self._run_msg_query(
             user,
             lambda tables: self._shard_rows(
                 tables, "WHERE sort_seq > ?",
                 (since_seq,),
+                order_ext=self._MSG_ORDER_ASC, per_shard_limit=want,
             ),
         )
         if not rows:
             return []
         rows.sort(key=lambda r: r["sort_seq"])
-        return [self._msg_row_to_dict(r) for r in rows[:limit]]
+        return [self._msg_row_to_dict(r) for r in rows[:want]]
 
     def _msg_row_to_dict(self, r) -> dict:
         content = r["message_content"]
