@@ -41,7 +41,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 PAGE_SZ = 4096
 RESERVE_SZ = 80  # IV(16) + HMAC(64)
-STAMP_VERSION = 2  # 解密缓存 stamp 格式版本，改合并逻辑时递增以强制重建
+STAMP_VERSION = 3  # v3: stamp 内 mtime 改用 %r 完整精度（%f 只留 6 位小数，与 Windows 7 位小数比较恒不等→每秒重建缓存→磁盘 50MB/s 读+写）
 CONFIG_CIPHER_NAME = b"com.Tencent.WCDB.Config.Cipher"
 CONFIG_XOR_MASK = bytes.fromhex(
     "d2c7442458020000004889442450488b"
@@ -1352,7 +1352,7 @@ class WeChatDB:
                 build = False
                 os.makedirs(os.path.dirname(stamp), exist_ok=True)
                 with open(stamp, "w") as f:
-                    f.write("%d,%f,%d,%f,%d,%d"
+                    f.write("%d,%r,%d,%r,%d,%d"
                             % (STAMP_VERSION, src_mtime, src_size, wal_mtime, wal_size, applied))
             elif attempt >= 3:
                 raise RuntimeError("数据库合并失败(文件被微信并发改写): %s" % rel)
