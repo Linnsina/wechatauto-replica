@@ -17,7 +17,7 @@ from wechatauto import WeChatDB, MediaDownloader
 
 def main():
     parser = argparse.ArgumentParser(description="原图下载示例")
-    parser.add_argument("chat", nargs="?", default="送你挖银子", help="会话名称/昵称（默认：文件传输助手）")
+    parser.add_argument("chat", nargs="?", default="送你挖银子", help="会话名称/昵称（默认：送你挖银子）")
     parser.add_argument("--count", type=int, default=1, help="下载图片数量（默认：1）")
     parser.add_argument("--timeout", type=float, default=30, help="每张图片等待超时（秒，默认：30）")
     parser.add_argument("--save-dir", default=None, help="保存目录（默认：~/Documents/wechatauto_media）")

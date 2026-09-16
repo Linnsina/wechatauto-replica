@@ -978,7 +978,7 @@ class WeChatGUI:
                    scale: int = 3) -> List[Tuple[str, int, int, int, int]]:
         """对渲染窗口相对区域放大 scale 倍后 OCR，返回渲染相对坐标。
 
-        微信 4.x 的小字号标题（尤其含生僻字如「卢立竺」）原尺寸 OCR 常
+        微信 4.x 的小字号标题（尤其含生僻字的标题）原尺寸 OCR 常
         漏识别或读出乱码，放大后识别率显著提升。坐标按 1/scale 还原。
         """
         screen_box = self._rel_to_screen(rel_box)
@@ -1068,8 +1068,8 @@ class WeChatGUI:
                        tol: int = 30) -> Optional[Tuple[int, int]]:
             """多轮 OCR 投票找会话行，抗单轮识别抖动。
 
-            WinRT OCR 对生僻字/小字号（如「卢立竺」）存在抖动：同一行
-            不同轮次可能读出「卢立竺」或「亠人五」。逐轮扫描并把命中行
+            WinRT OCR 对生僻字/小字号存在抖动：同一行
+            不同轮次可能误识成形近字。逐轮扫描并把命中行
             按 y 聚类，票数达到 min_votes 才返回，显著降低误配率。
             """
             hits = []  # (y, x, w, h)
@@ -1107,7 +1107,7 @@ class WeChatGUI:
             if hit:
                 return hit
             time.sleep(0.4)
-        # 原尺寸扫不到 → 放大 3 倍多轮投票（生僻字/小字号会话，如「卢立竺」）
+        # 原尺寸扫不到 → 放大 3 倍多轮投票（生僻字/小字号会话）
         hit = _scan_vote(zoomed=True)
         if hit:
             return hit
@@ -1318,7 +1318,7 @@ class WeChatGUI:
         等节标题。OCR 结果按 y 排序后，跳过节标题/提示行，点选视觉上
         第一条匹配名称的联系人行。
 
-        群聊的成员预览行（如「00，包含：卢立竺」）也含目标名片段，若不
+        群聊的成员预览行（如「00，包含：某好友」）也含目标名片段，若不
         排除会误点群聊而非联系人。群聊节标题「群聊」以下的行优先排除，
         含「包含」的成员预览行直接跳过。
         """
