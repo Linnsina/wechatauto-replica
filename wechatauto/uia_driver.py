@@ -248,15 +248,61 @@ class WeChatUIA:
     # ------------------------------------------------------------------ 基础
     @staticmethod
     def is_running() -> bool:
+        """微信是否在运行（多判据；**不把“探测失败”当成“未运行”**）。
+
+        判据：① tasklist（中文 Windows 输出为 GBK）；② 主窗口标题（微信/Weixin，
+        登录窗也算）；③ psutil 进程枚举。任一命中即 True。
+        只有**所有判据都出错失败**时才写一行 stderr 说明原因——避免把探测失败
+        伪装成“微信没在运行”（那种假报错会误导上层去重启/唤起微信）。
+        """
+        errors, absent = [], []
         try:
             import subprocess
-            out = subprocess.run(["tasklist", "/fi", "imagename eq Weixin.exe",
-                                  "/nh"], capture_output=True, text=True,
-                                 encoding="gbk", errors="replace",
-                                 timeout=10).stdout or ""
-            return "Weixin.exe" in out
-        except Exception:
-            return False
+            out = subprocess.run(
+                ["tasklist", "/fi", "imagename eq Weixin.exe", "/nh"],
+                capture_output=True, text=True, encoding="gbk", errors="replace",
+                timeout=10).stdout or ""
+            if "Weixin.exe" in out:
+                return True
+            absent.append("tasklist")
+        except Exception as exc:
+            errors.append("tasklist: %r" % (exc,))
+        try:
+            if _HAS_WIN32:
+                hits = []
+
+                def _cb(hwnd, _):
+                    try:
+                        if win32gui.IsWindowVisible(hwnd) and _title_is_main(
+                                win32gui.GetWindowText(hwnd)):
+                            hits.append(hwnd)
+                    except Exception:
+                        pass
+                    return True
+
+                win32gui.EnumWindows(_cb, None)
+                if hits:
+                    return True
+                absent.append("主窗口标题")
+            else:
+                errors.append("主窗口标题: 无 win32")
+        except Exception as exc:
+            errors.append("主窗口标题: %r" % (exc,))
+        try:
+            import psutil
+            for proc in psutil.process_iter(["name"]):
+                if (proc.info.get("name") or "").lower() == "weixin.exe":
+                    return True
+            absent.append("psutil")
+        except Exception as exc:
+            errors.append("psutil: %r" % (exc,))
+        if errors and not absent:
+            import sys as _sys
+            _sys.stderr.write(
+                "[wechatauto] WeChatUIA.is_running(): 所有判据均失败，无法确定微信状态"
+                "（%s）；本次按 False 返回，但不要据此断定微信已退出\n"
+                % "；".join(errors))
+        return False
 
     def wake(self) -> None:
         """weixin:// 协议唤起/显示窗口（托盘态也能拉起）；失败则拉起 exe。"""
