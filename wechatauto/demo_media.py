@@ -99,7 +99,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="wechatauto 演示：读取/下载微信会话中的媒体文件",
         add_help=False)
-    parser.add_argument("target", nargs="?", default="26级金高新生群1群",
+    parser.add_argument("target", nargs="?", default="文件传输助手",
                         help="会话名（昵称/备注/username），默认文件传输助手")
     parser.add_argument("--limit", type=int, default=1000, help="列出最近 N 条（默认 200）")
     parser.add_argument("--photos", type=int, default=10, help="默认模式下载照片张数（默认 3）")
