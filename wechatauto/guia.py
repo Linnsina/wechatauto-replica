@@ -150,6 +150,13 @@ SIDEBAR_TOP = 0.05                       # 会话列表顶部起始（相对窗�
 SEARCH_BOX_RATIO = (0.18, 0.041, 0.86, 0.079)  # (x0,y0,x1,y1)，x 相对侧栏宽、y 相对窗口高
 SEND_BUTTON_RATIO = (0.78, 0.92, 0.995, 0.99)  # 「发送」按钮检索区（相对窗口）
 
+# 竖屏（手机式窄窗口）布局：微信新版支持把窗口缩到手机比例，界面切换为
+# 单列布局——会话列表占满窗口宽度，打开会话后聊天区同样占满窗口宽度。
+# 两档位（wide / portrait）各自独立校准，分别存于布局文件。
+PORTRAIT_MIN_HW = 1.2            # 高/宽 ≥ 此值 → 视为竖屏（手机式）布局
+PORTRAIT_SIDEBAR_RATIO = 1.0     # 竖屏下「侧栏」= 整窗宽（单列）
+MIN_WINDOW_PORTRAIT = 600        # 竖屏主窗口的最小高度（像素）
+
 # 多特征兜底：类名只是「软条件」之一，还需 进程名/可见/大尺寸/标题 等特征
 # 联合判断，避免 Qt 升级改名（Qt51514 → Qt6xxx）后主窗口定位失效。
 PROCESS_NAME = 'weixin.exe'              # 微信进程名（小写）
@@ -158,6 +165,13 @@ MAIN_TITLE_KEYWORDS = ('微信', 'Weixin', 'WeChat')
 
 # 布局校准配置目录：~/.wechatauto/layout-<机器标识>.json
 LAYOUT_CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.wechatauto')
+
+
+def _layout_profile(w: int, h: int) -> str:
+    """按窗口长宽比判定布局档位：``'portrait'``（手机式竖屏）或 ``'wide'``。"""
+    if w > 0 and h > 0 and h / w >= PORTRAIT_MIN_HW:
+        return 'portrait'
+    return 'wide'
 
 
 def _machine_id() -> str:
@@ -393,7 +407,9 @@ class WeChatGUI:
                  calibrate: bool = False):
         self._input = WinInput()
         self._sidebar_ratio = SIDEBAR_RATIO
+        self._portrait_sidebar_ratio = PORTRAIT_SIDEBAR_RATIO
         self._send_button_ratio = SEND_BUTTON_RATIO
+        self.layout_profile = 'wide'      # 由 _update_layout() 按窗口比例刷新
         self.main_hwnd = hwnd or self._find_main_window(title)
         if not self.main_hwnd:
             raise RuntimeError('未找到微信主窗口，请确认微信已登录并运行')
@@ -468,8 +484,9 @@ class WeChatGUI:
             score += 3
         rr = wintypes.RECT()
         u.GetWindowRect(hwnd, ctypes.byref(rr))
-        if (rr.right - rr.left) >= MIN_WINDOW_SIZE \
-                or (rr.bottom - rr.top) >= MIN_WINDOW_SIZE:
+        w_, h_ = rr.right - rr.left, rr.bottom - rr.top
+        if w_ >= MIN_WINDOW_SIZE or h_ >= MIN_WINDOW_SIZE \
+                or (0 < w_ < h_ and h_ >= MIN_WINDOW_PORTRAIT):
             score += 2
         return score >= 5
 
@@ -506,7 +523,8 @@ class WeChatGUI:
             w = rr.right - rr.left
             ht = rr.bottom - rr.top
             if w > 0 and ht > 0:
-                if w >= MIN_WINDOW_SIZE or ht >= MIN_WINDOW_SIZE:
+                if w >= MIN_WINDOW_SIZE or ht >= MIN_WINDOW_SIZE \
+                        or (w < ht and ht >= MIN_WINDOW_PORTRAIT):
                     score += 2
                 if score >= 5:
                     scored.append((score, w * ht, h))
@@ -574,10 +592,18 @@ class WeChatGUI:
         比例优先取布局校准结果（``_sidebar_ratio`` / ``_send_button_ratio``），
         未校准时回落到模块默认常量。
         """
-        sb_ratio = getattr(self, '_sidebar_ratio', SIDEBAR_RATIO)
+        self.layout_profile = _layout_profile(self.render_w, self.render_h)
         send_ratio = getattr(self, '_send_button_ratio', SEND_BUTTON_RATIO)
-        self.sidebar_right = max(120, int(self.render_w * sb_ratio))
-        self.right_pane_left = self.sidebar_right
+        if self.layout_profile == 'portrait':
+            # 手机式竖屏：单列——列表占满窗宽；打开会话后聊天区同样占满
+            sb_ratio = getattr(self, '_portrait_sidebar_ratio',
+                               PORTRAIT_SIDEBAR_RATIO)
+            self.sidebar_right = max(120, int(self.render_w * sb_ratio))
+            self.right_pane_left = 0
+        else:
+            sb_ratio = getattr(self, '_sidebar_ratio', SIDEBAR_RATIO)
+            self.sidebar_right = max(120, int(self.render_w * sb_ratio))
+            self.right_pane_left = self.sidebar_right
         sx0, sy0, sx1, sy1 = SEARCH_BOX_RATIO
         self.search_box = (
             int(self.sidebar_right * sx0), int(self.render_h * sy0),
@@ -641,10 +667,17 @@ class WeChatGUI:
             self.bring_to_front()
             time.sleep(0.8)
             self._update_render_rect()
-            layout: Dict[str, object] = {'machine': _machine_id()}
-            # 1) 侧栏宽度：OCR「搜索」锚点（限制 5s 超时）
-            sb = _run_with_timeout(self._detect_sidebar_ratio, timeout=5)
-            layout['sidebar_ratio'] = float(sb) if sb else SIDEBAR_RATIO
+            profile = _layout_profile(self.render_w, self.render_h)
+            entry: Dict[str, object] = {'profile': profile}
+            # 1) 侧栏宽度
+            #    wide：OCR「搜索」锚点（限制 5s 超时）反推侧栏右边界；
+            #    portrait：手机式单列布局，列表即整窗宽，比例恒为 1.0
+            #    （该锚点的 0.28 经验值只适用于宽屏侧栏，竖屏下不适用）
+            if profile == 'portrait':
+                entry['sidebar_ratio'] = PORTRAIT_SIDEBAR_RATIO
+            else:
+                sb = _run_with_timeout(self._detect_sidebar_ratio, timeout=5)
+                entry['sidebar_ratio'] = float(sb) if sb else SIDEBAR_RATIO
             # 2) 发送按钮：OCR「发送」（仅右下角检索区，限制 5s 超时）
             try:
                 lines = _run_with_timeout(
@@ -668,32 +701,63 @@ class WeChatGUI:
                 y0 = max(0, sy - pad_y)
                 x1 = min(self.render_w, sx + sw + pad_x)
                 y1 = min(self.render_h, sy + sh + pad_y)
-                layout['send_button_ratio'] = [
+                entry['send_button_ratio'] = [
                     x0 / self.render_w, y0 / self.render_h,
                     x1 / self.render_w, y1 / self.render_h]
             else:
-                layout['send_button_ratio'] = list(SEND_BUTTON_RATIO)
-            layout['render_w'] = self.render_w
-            layout['render_h'] = self.render_h
-            layout['date'] = time.strftime('%Y-%m-%d %H:%M:%S')
+                entry['send_button_ratio'] = list(SEND_BUTTON_RATIO)
+            entry['render_w'] = self.render_w
+            entry['render_h'] = self.render_h
+            entry['date'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            layout = self._merge_layout_file(profile, entry)
             if save:
                 try:
                     with open(_layout_path(), 'w', encoding='utf-8') as f:
                         json.dump(layout, f, ensure_ascii=False, indent=2)
                 except Exception as e:
                     wxlog.debug(f'保存布局校准文件失败：{e}')
-            self._apply_layout(layout)
+            self._apply_layout(entry)
             wxlog.info(
-                f'布局校准完成：sidebar_ratio={layout["sidebar_ratio"]:.3f}, '
-                f'send_button_ratio={layout["send_button_ratio"]}')
+                f'布局校准完成（{profile}）：sidebar_ratio={entry["sidebar_ratio"]:.3f}, '
+                f'send_button_ratio={entry["send_button_ratio"]}')
             return True
         except Exception as e:
             wxlog.debug(f'布局校准失败：{e}')
             return False
 
+    @staticmethod
+    def _merge_layout_file(profile: str, entry: dict) -> dict:
+        """把本次校准结果并入布局文件（保留另一档位的配置）。
+
+        新格式：``{"version": 2, "machine": ..., "profiles": {"wide": {...},
+        "portrait": {...}}}``；旧的扁平格式（只有 sidebar_ratio 等）视为
+        ``wide`` 档位，迁移后不再丢失。
+        """
+        data: Dict[str, object] = {'version': 2, 'machine': _machine_id(),
+                                   'profiles': {}}
+        p = _layout_path()
+        if os.path.isfile(p):
+            try:
+                with open(p, encoding='utf-8') as f:
+                    old = json.load(f)
+            except Exception:
+                old = {}
+            if isinstance(old, dict):
+                if isinstance(old.get('profiles'), dict):
+                    data['profiles'] = dict(old['profiles'])
+                elif 'sidebar_ratio' in old:          # v1 扁平格式 → 宽屏档
+                    data['profiles']['wide'] = old
+        data['profiles'][profile] = entry
+        return data
+
     def _apply_layout(self, d: dict) -> None:
-        """应用布局校准结果并重算各布局区域。"""
-        self._sidebar_ratio = float(d.get('sidebar_ratio', SIDEBAR_RATIO))
+        """应用某一档位的布局校准结果并重算各布局区域。"""
+        prof = d.get('profile') or _layout_profile(self.render_w, self.render_h)
+        if prof == 'portrait':
+            self._portrait_sidebar_ratio = float(
+                d.get('sidebar_ratio', PORTRAIT_SIDEBAR_RATIO))
+        else:
+            self._sidebar_ratio = float(d.get('sidebar_ratio', SIDEBAR_RATIO))
         sb = d.get('send_button_ratio')
         if isinstance(sb, (list, tuple)) and len(sb) == 4:
             try:
@@ -703,10 +767,12 @@ class WeChatGUI:
         self._update_layout()
 
     def _load_layout(self) -> bool:
-        """运行前自动加载本机已校准的布局配置，返回是否成功采用。
+        """运行前自动加载本机已校准的**当前档位**布局配置，返回是否成功采用。
 
-        窗口尺寸与校准当时差异过大（>15%，如窗口缩放/未最大化）时视为
-        布局不匹配，拒绝采用并触发重新校准。
+        新格式按 profiles 分档；旧扁平格式视为 wide 档。当前档位没有配置
+        （例如第一次把窗口缩成手机比例）时返回 False → 触发该档位自动校准。
+        窗口尺寸与校准当时差异过大（>15%，如窗口缩放/未最大化）时同样视为
+        布局不匹配，拒绝采用。
         """
         p = _layout_path()
         if not os.path.isfile(p):
@@ -716,14 +782,27 @@ class WeChatGUI:
                 d = json.load(f)
         except Exception:
             return False
-        if abs(float(d.get('render_w', 0) or 0) - self.render_w) \
+        profile = _layout_profile(self.render_w, self.render_h)
+        entry = None
+        if isinstance(d.get('profiles'), dict):
+            entry = d['profiles'].get(profile)
+        elif 'sidebar_ratio' in d:
+            entry = d if profile == 'wide' else None
+        if not isinstance(entry, dict):
+            wxlog.info(f'布局校准缺少 {profile} 档位配置，触发该档位校准')
+            return False
+        if abs(float(entry.get('render_w', 0) or 0) - self.render_w) \
                 / max(self.render_w, 1) > 0.15:
             wxlog.info(
                 f'布局配置与当前窗口尺寸差异过大，忽略并重新校准'
-                f'（校准={d.get("render_w")} vs 当前={self.render_w}）')
+                f'（{profile} 校准={entry.get("render_w")} vs 当前={self.render_w}）')
             return False
-        self._apply_layout(d)
-        wxlog.info(f'已加载布局校准：sidebar_ratio={self._sidebar_ratio:.3f}')
+        self._apply_layout(entry)
+        wxlog.info(
+            f'已加载布局校准（{profile}）：'
+            f'sidebar_ratio={getattr(self, "_sidebar_ratio", SIDEBAR_RATIO):.3f}'
+            + (f', portrait_sidebar_ratio={self._portrait_sidebar_ratio:.3f}'
+               if profile == 'portrait' else ''))
         return True
 
     def use_window(self, top_hwnd: int) -> bool:
