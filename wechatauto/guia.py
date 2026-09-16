@@ -678,21 +678,26 @@ class WeChatGUI:
             else:
                 sb = _run_with_timeout(self._detect_sidebar_ratio, timeout=5)
                 entry['sidebar_ratio'] = float(sb) if sb else SIDEBAR_RATIO
-            # 2) 发送按钮：OCR「发送」（仅右下角检索区，限制 5s 超时）
-            try:
-                lines = _run_with_timeout(
-                    lambda: self.ocr((int(self.render_w * 0.5),
-                                      int(self.render_h * 0.7),
-                                      self.render_w, self.render_h)),
-                    timeout=5)
-                lines = lines or []
-            except Exception:
-                lines = []
+            # 2) 发送按钮：OCR「发送」（仅右下角检索区）
+            #    OCR 会偶发漏检（按钮只在输入框有内容时可见），重试一次；
+            #    两次都没抓到就保持默认比例（实测默认区已能覆盖「发送」）
             send = None
-            for text, x, y, w, h in lines:
-                if (text or '').strip() == '发送':
-                    send = (x, y, w, h)
+            for _attempt in range(2):
+                try:
+                    lines = _run_with_timeout(
+                        lambda: self.ocr((int(self.render_w * 0.5),
+                                          int(self.render_h * 0.7),
+                                          self.render_w, self.render_h)),
+                        timeout=5)
+                except Exception:
+                    lines = None
+                for text, x, y, w, h in (lines or []):
+                    if (text or '').strip() == '发送':
+                        send = (x, y, w, h)
+                        break
+                if send:
                     break
+                time.sleep(0.6)
             if send:
                 sx, sy, sw, sh = send
                 # 检索区需略大于按钮本体，OCR 才能稳定命中；四周留边距
@@ -798,11 +803,9 @@ class WeChatGUI:
                 f'（{profile} 校准={entry.get("render_w")} vs 当前={self.render_w}）')
             return False
         self._apply_layout(entry)
-        wxlog.info(
-            f'已加载布局校准（{profile}）：'
-            f'sidebar_ratio={getattr(self, "_sidebar_ratio", SIDEBAR_RATIO):.3f}'
-            + (f', portrait_sidebar_ratio={self._portrait_sidebar_ratio:.3f}'
-               if profile == 'portrait' else ''))
+        ratio = (self._portrait_sidebar_ratio if profile == 'portrait'
+                 else self._sidebar_ratio)
+        wxlog.info(f'已加载布局校准（{profile}）：sidebar_ratio={ratio:.3f}')
         return True
 
     def use_window(self, top_hwnd: int) -> bool:
