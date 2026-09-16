@@ -17,7 +17,7 @@
 
 Automate the **WeChat 4.x Windows desktop client** (not the web version): read messages, listen in real time, download media, export full history, read Moments (朋友圈), and send messages — by driving the local client directly.
 
-> **Current version:** 1.2.2.2 · Windows 10/11 · Python 3.9+ (verified on 3.12) · WeChat **4.1.12+**
+> **Current version:** 1.2.2.3 · Windows 10/11 · Python 3.9+ (verified on 3.12) · WeChat **4.1.12+**
 >
 > **Why this project exists:** the classic [wxauto](https://github.com/cluic/wxauto) relies on the UI Automation tree, which WeChat 4.x broke with self-drawn rendering (no accessibility nodes). wechatauto-replica is a drop-in-style replacement: messages are read through **local database decryption** (SQLCipher 4), and sending uses a **UIA + OCR hybrid** driver that auto-falls back between engines.
 
@@ -182,6 +182,14 @@ Runnable demo: `python -m wechatauto.demo_moments_interact [--like N | --unlike 
 - Performance: parallel export / first-scan, incremental memory-scan cache
 
 ## 📝 Changelog
+
+### v1.2.2.3 (2026-09-16)
+
+- **Fixed: constant ~50 MB/s disk read + write while the library runs.** The decrypt-cache stamp compared mtimes with exact float equality while writing them with `%f` (6 decimals) against Windows' 7-decimal mtimes — so every poll (~1s) looked like a changed database and re-decrypted everything (WAL merge + cache rewrite included). Now `STAMP_VERSION 3` with `%r` (exact round-trip): one rebuild after upgrading, then stable.
+- **Message reads now LIMIT inside each shard before merging** (**5.5×** on a 48k-message group: 1.053s → 0.191s; `get_new_messages` ≈6×). Huge chats no longer materialize every shard's rows in Python. Public APIs (`get_messages`, `get_new_messages`, `get_message_row(..., local_type=)`, `get_message_rows_for_media`) keep identical signatures **and** results (verified across 6 chats × 71 cases).
+- **Fixed “cannot get keys” under UTF-8 mode**: four `tasklist` calls decoded GBK output with the default codec; under `python -X utf8` / `PYTHONUTF8=1` the decode failed, left `stdout` as None and raised `AttributeError`, killing key extraction. All four now use `encoding="gbk", errors="replace"` with a None guard.
+- **`WeChatUIA.is_running()` is now multi-criterion**: it used to be one probe wrapped in `except → False`, so any error silently became “WeChat is not running”. It now checks tasklist / main-window title / psutil, and only writes an explicit stderr note when every probe *errors*.
+- **Real contact/group names removed from demos and docs** (replaced with 「文件传输助手」; 「兔仔仔」/「送你挖银子」 kept as sample defaults).
 
 ### v1.2.2.2 (2026-09-13)
 
