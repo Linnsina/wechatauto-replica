@@ -252,6 +252,7 @@ class WeChatUIA:
             import subprocess
             out = subprocess.run(["tasklist", "/fi", "imagename eq Weixin.exe",
                                   "/nh"], capture_output=True, text=True,
+                                 encoding="gbk", errors="replace",
                                  timeout=10).stdout or ""
             return "Weixin.exe" in out
         except Exception:

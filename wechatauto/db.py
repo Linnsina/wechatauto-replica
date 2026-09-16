@@ -1023,13 +1023,16 @@ class WeChatDB:
         try:
             r = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq Weixin.exe", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="gbk", errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except OSError:
             return []
+        # 中文 Windows 的 tasklist 输出是 GBK：不显式指定编码时，UTF-8 模式
+        # （-X utf8 / PYTHONUTF8=1）下解码失败会让 stdout 变成 None，
+        # “取密钥”这一步就会以 AttributeError 收场（已实测复现）。
         pids = []
-        for line in r.stdout.strip().splitlines():
+        for line in (r.stdout or "").strip().splitlines():
             parts = line.strip('"').split('","')
             if len(parts) >= 2 and parts[1].isdigit():
                 pids.append(int(parts[1]))
@@ -1245,13 +1248,13 @@ class WeChatDB:
         try:
             r = _sp.run(
                 ["tasklist", "/FI", "IMAGENAME eq Weixin.exe", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="gbk", errors="replace",
                 creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0),
             )
         except OSError:
             return
         pids = []
-        for line in r.stdout.strip().splitlines():
+        for line in (r.stdout or "").strip().splitlines():
             parts = line.strip('"').split('","')
             if len(parts) >= 2 and parts[1].isdigit():
                 pids.append(int(parts[1]))
